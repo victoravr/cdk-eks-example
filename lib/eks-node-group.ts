@@ -1,13 +1,12 @@
 import ec2 = require('@aws-cdk/aws-ec2');
 import iam = require('@aws-cdk/aws-iam');
 import asg = require('@aws-cdk/aws-autoscaling');
-import cdk = require('@aws-cdk/cdk');
+import cdk = require('@aws-cdk/core');
 
 export interface NodeGroupProps extends cdk.StackProps {
-  controlPlaneSG: ec2.SecurityGroupRefProps;
-  vpc: ec2.VpcNetworkRefProps;
+  controlPlaneSG: ec2.SecurityGroup;
+  vpc: ec2.IVpc;
   clusterName: string;
-  bastion: boolean;
   sshAllowedCidr: string[];
   keyName?: string;
   nodeGroupMaxSize: number;
@@ -16,107 +15,92 @@ export interface NodeGroupProps extends cdk.StackProps {
   nodeGroupInstanceType: string;
 }
 
-const CP_WORKER_PORTS = new ec2.TcpPortRange(1025, 65535);
-const API_PORTS = new ec2.TcpPort(443);
 const WORKER_NODE_POLICIES: string[] = [
-  "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
-  "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
-  "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  "AmazonEKSWorkerNodePolicy",
+  "AmazonEKS_CNI_Policy",
+  "AmazonEC2ContainerRegistryReadOnly"
 ];
 
 export class EksNodeGroupStack extends cdk.Stack {
 
   public readonly workerNodeASG: asg.AutoScalingGroup;
-  private bastionASG: asg.AutoScalingGroup;
 
   constructor(parent: cdk.App, name: string, props: NodeGroupProps) {
     super(parent, name, props);
 
-    const vpc = ec2.VpcNetworkRef.import(this, 'ClusterVpc', props.vpc);
-    const controlPlaneSG = ec2.SecurityGroupRef.import(this, 'ControlPlaneSG', props.controlPlaneSG)
+    const vpc = props.vpc;
+    const controlPlaneSG = ec2.SecurityGroup.fromSecurityGroupId(this, "eksClustersg", cdk.Fn.importValue('eksClustersg'));
 
     // have to periodically update this constant
     const amiMap: {[region: string]: string;} = {
-      'us-west-2': 'ami-0f54a2f7d2e9c88b3',
-      'us-east-1': 'ami-0a0b913ef3249b655',
-      'us-east-2': 'ami-0958a76db2d150238',
-      'eu-west-1': 'ami-00c3b2d35bddd4f5c',
+      "ap-southeast-2": 'ami-029318fe7c3a1664b',
     };
     this.workerNodeASG = new asg.AutoScalingGroup(this, 'Workers', {
       instanceType: new ec2.InstanceType(props.nodeGroupInstanceType),
       machineImage: new ec2.GenericLinuxImage(amiMap),
       vpc,
       allowAllOutbound: true,
-      minSize: props.nodeGroupMinSize,
-      maxSize: props.nodeGroupMaxSize,
+      minCapacity: props.nodeGroupMinSize,
+      maxCapacity: props.nodeGroupMaxSize,
       desiredCapacity: props.nodeGroupDesiredSize,
       keyName: props.keyName,
-      vpcPlacement: {subnetsToUse: ec2.SubnetType.Private},
-      updateType: asg.UpdateType.RollingUpdate,
+      updateType: asg.UpdateType.ROLLING_UPDATE,
       rollingUpdateConfiguration: {
         maxBatchSize: 1,
         minInstancesInService: 1,
-        pauseTimeSec: 300,
+        pauseTime: cdk.Duration.minutes(5),
         waitOnResourceSignals: true,
       },
     });
-    this.workerNodeASG.tags.setTag(`kubernetes.io/cluster/${props.clusterName}`, 'owned');
-    this.workerNodeASG.tags.setTag('NodeType', 'Worker');
+    cdk.Tag.add(this.workerNodeASG, `kubernetes.io/cluster/${props.clusterName}`, 'owned');
+    cdk.Tag.add(this.workerNodeASG, 'NodeType', 'Worker');
     for (const policy of WORKER_NODE_POLICIES) {
-      this.workerNodeASG.role.attachManagedPolicy(policy);
+      this.workerNodeASG.role.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName(policy));
     }
 
     this.workerNodeASG.role.
-      addToPolicy( new iam.PolicyStatement().
-                  addAction('cloudformation:SignalResource').
-                  addResource( `arn:aws:cloudformation:${new cdk.AwsRegion()}:${new cdk.AwsAccountId()}:stack/${new cdk.AwsStackName}/*`));
+      addToPolicy(  (()=> {
+                      const workerNodeASGPolicyStatement = new iam.PolicyStatement();
+                      workerNodeASGPolicyStatement.addActions('cloudformation:SignalResource')
+                      workerNodeASGPolicyStatement.addResources( `arn:aws:cloudformation:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:stack/${cdk.Aws.STACK_NAME}/*`);
+                      return workerNodeASGPolicyStatement;
+                    })()
+                  
+      );
 
     this.workerNodeASG.role.
-      addToPolicy( new iam.PolicyStatement().
-                  addAction('ec2:DescribeTags').addAllResources());
+      addToPolicy(  (()=> {
+                      const workerNodeASGPolicyStatement = new iam.PolicyStatement();
+                      workerNodeASGPolicyStatement.addAllResources();
+                      workerNodeASGPolicyStatement.addActions('ec2:DescribeTags');
+                      return workerNodeASGPolicyStatement;
+                    })()
+      );
 
     // this issue is being tracked: https://github.com/awslabs/aws-cdk/issues/623
-    const asgResource = this.workerNodeASG.children.find(c => (c as cdk.Resource).resourceType === 'AWS::AutoScaling::AutoScalingGroup') as asg.cloudformation.AutoScalingGroupResource;
+     
+    const asgResource = this.workerNodeASG.node.children.find(c => (c as cdk.CfnResource).cfnResourceType === 'AWS::AutoScaling::AutoScalingGroup') as asg.CfnAutoScalingGroup;
 
     this.workerNodeASG.addUserData(
       'set -o xtrace',
       `/etc/eks/bootstrap.sh ${props.clusterName}`,
       `/opt/aws/bin/cfn-signal --exit-code $? \\`,
-      `  --stack ${new cdk.AwsStackName()} \\`,
+      `  --stack ${cdk.Aws.STACK_NAME} \\`,
       `  --resource ${asgResource.logicalId} \\`,
-      `  --region ${new cdk.AwsRegion()}`
+      `  --region ${cdk.Aws.REGION}`
     );
 
-    this.workerNodeASG.connections.allowFrom(controlPlaneSG, CP_WORKER_PORTS);
-    this.workerNodeASG.connections.allowFrom(controlPlaneSG, API_PORTS);
-    this.workerNodeASG.connections.allowInternally(new ec2.AllTraffic());
+    this.workerNodeASG.connections.allowFrom(controlPlaneSG, ec2.Port.tcpRange(1025, 65535));
+    this.workerNodeASG.connections.allowFrom(controlPlaneSG, ec2.Port.tcp(443));
+    this.workerNodeASG.connections.allowInternally(ec2.Port.allTraffic());
+    
     const cpConnection = controlPlaneSG.connections;
-    cpConnection.allowTo(this.workerNodeASG, CP_WORKER_PORTS);
-    cpConnection.allowTo(this.workerNodeASG, API_PORTS);
-    cpConnection.allowFrom(this.workerNodeASG, CP_WORKER_PORTS);
+    cpConnection.allowTo(this.workerNodeASG, ec2.Port.tcpRange(1025, 65535));
+    cpConnection.allowTo(this.workerNodeASG, ec2.Port.tcp(443));
+    cpConnection.allowFrom(this.workerNodeASG, ec2.Port.tcpRange(1025, 65535));
 
-    new cdk.Output(this, 'WorkerRoleArn', {
+    new cdk.CfnOutput(this, 'WorkerRoleArn', {
       value: this.workerNodeASG.role.roleArn,
     });
-
-    // add variable constructs at the end because if they are in the middle they
-    // will force a destruction of any resources added after them
-    // see: https://awslabs.github.io/aws-cdk/logical-ids.html
-    if (props.bastion) {
-      this.bastionASG = new asg.AutoScalingGroup(this, 'Bastion', {
-        instanceType: new ec2.InstanceTypePair(ec2.InstanceClass.T3, ec2.InstanceSize.Micro),
-        machineImage: new ec2.GenericLinuxImage(amiMap),
-        vpc,
-        minSize: 1,
-        maxSize: 1,
-        desiredCapacity: 1,
-        keyName: props.keyName,
-        vpcPlacement: {subnetsToUse: ec2.SubnetType.Public},
-      });
-      for (const cidr of props.sshAllowedCidr) {
-        this.bastionASG.connections.allowFrom(new ec2.CidrIPv4(cidr), new ec2.TcpPort(22));
-      }
-      this.workerNodeASG.connections.allowFrom(this.bastionASG, new ec2.TcpPort(22));
-    }
   }
 }

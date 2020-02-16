@@ -1,13 +1,12 @@
 {
   "app": "node bin/eks-example.js",
   "context": {
-    "cluster-name": "EksExample",
+    "cluster-name": "eksPOC",
     "key-name": null,
-    "node-group-max-size": 5,
+    "node-group-max-size": 3,
     "node-group-min-size": 1,
-    "node-group-desired-size": 3,
+    "node-group-desired-size": 2,
     "node-group-instance-type": "t3.medium",
-    "bastion": false,
     "ssh-allowed-cidr": []
   }
 }

@@ -42,7 +42,7 @@ stack is functionally very similar to the [AWS Getting Started Step 1](https://d
 
 The context allows you to set your desired EKS Cluster Name, but if you do not
 alter `cdk.json` or pass in a command line argument the default will be used.
-The stack will also create a VPC and NAT Gateway.
+The stack uses existing VPC.
 
 Using the defaults the command would be: 
 
@@ -91,16 +91,10 @@ cdk deploy EksWorkers
 # this output a similar success message at the end
 ```
 
-The defaults for the workers can be found in the [cdk.json](cdk.json). The only
-aspect that might be confusing is the optional [bastion](https://en.wikipedia.org/wiki/Bastion_host) configuration. 
-If you want a bastion host the best option is to edit the [cdk.json](cdk.json)
-file and the values for your configuration. The edits will be made to the
-`bastion`, `key-name`, and `ssh-allowed-cidr` json keys. 
+The defaults for the workers can be found in the [cdk.json](cdk.json). You can edit the [cdk.json](cdk.json)
+file and provide the values for your configuration. The edits will be made to the `key-name`. 
 
 `key-name` is an [AWS EC2 Keypair](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-key-pairs.html).
-
-`ssh-allowed-cidr` is a list of IP addresses that will be allowed to SSH to the
-bastion host. You can lookup your external IP via [AWS](http://checkip.amazonaws.com/). At a minimum you will want to add that IP as a `/32` below.
 
 Your file might look similar to this: 
 
@@ -113,9 +107,7 @@ Your file might look similar to this:
     "node-group-max-size": 5,
     "node-group-min-size": 1,
     "node-group-desired-size": 3,
-    "node-group-instance-type": "t3.medium",
-    "bastion": true,
-    "ssh-allowed-cidr": ["1.2.3.4/32"]
+    "node-group-instance-type": "t3.medium"
 }
 ```
 
@@ -129,7 +121,7 @@ cdk diff EksWorkers
 cdk deploy EksWorkers
 # example success 
 Outputs:
-EksWorkers.WorkerRoleArn = arn:aws:iam::667237269012:role/EksWorkers-WorkersInstanceRole510CB30C-QFC0D1PV61B
+EksWorkers.WorkerRoleArn = arn:aws:iam::XXXXXXXXXXXXXXX:role/EksWorkers-WorkersInstanceRole510CB30C-QFC0D1PV61B
 # note this ARN for the next step
 ```
 
@@ -192,5 +184,3 @@ During the development of this example I noted a couple of issues with the CDK.
 The issues are in comments but for simple tracking you can check out these links
 for issues I worked around in making this example work.
  * https://github.com/awslabs/aws-cdk/issues/623
-
-
